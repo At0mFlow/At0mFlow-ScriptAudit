@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -File ./scripts/Test-PublicBoundary.ps1
+  exec pwsh -NoProfile -File ./tests/Run-Tests.ps1
+fi
+
+if command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/Test-PublicBoundary.ps1
+  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./tests/Run-Tests.ps1
+fi
+
+echo "PowerShell is required to run repository checks." >&2
+exit 1

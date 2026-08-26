@@ -1,0 +1,12 @@
+# Client audit bundles are private and must never be committed here.
+At0mFlow-ScriptAudit-*/
+audit-output/
+collected-scripts/
+
+# Local reports and editor files.
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

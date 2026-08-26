@@ -1,0 +1,5 @@
+scripts/
+  SERVER-EXAMPLE-01/
+    C/
+      Scripts/
+        Synthetic-NightlyReport.ps1

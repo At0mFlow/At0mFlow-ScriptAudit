@@ -1,0 +1,73 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-powershell:
+    name: ${{ matrix.os }} / PowerShell 7
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Verify public repository boundary
+        shell: pwsh
+        run: ./scripts/Test-PublicBoundary.ps1
+
+      - name: Run tests
+        shell: pwsh
+        run: ./tests/Run-Tests.ps1
+
+      - name: Analyse PowerShell source
+        shell: pwsh
+        run: |
+          $issues = @(Invoke-ScriptAnalyzer -Path ./src -Recurse -Severity Error,Warning)
+          if ($issues.Count -gt 0) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer found $($issues.Count) issue(s)."
+          }
+
+  test-windows-powershell:
+    name: windows-latest / Windows PowerShell 5.1
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install PSScriptAnalyzer
+        shell: powershell
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force
+
+      - name: Verify public repository boundary
+        shell: powershell
+        run: ./scripts/Test-PublicBoundary.ps1
+
+      - name: Run tests
+        shell: powershell
+        run: ./tests/Run-Tests.ps1
+
+      - name: Analyse PowerShell source
+        shell: powershell
+        run: |
+          $issues = @(Invoke-ScriptAnalyzer -Path ./src -Recurse -Severity Error,Warning)
+          if ($issues.Count -gt 0) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer found $($issues.Count) issue(s)."
+          }
