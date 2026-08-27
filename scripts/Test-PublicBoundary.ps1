@@ -170,6 +170,18 @@ try {
         }
     }
 
+    $readmeContent = Get-Content -LiteralPath (Join-Path $repositoryRoot 'README.md') -Raw
+    $requiredPublicToolLinks = @(
+        'https://github.com/At0mFlow/At0mFlow-PSAnalyzer',
+        'https://github.com/At0mFlow/At0mFlow-UptimeMonitor',
+        'https://github.com/At0mFlow/At0mFlow-RepoSync'
+    )
+    foreach ($requiredPublicToolLink in $requiredPublicToolLinks) {
+        if (-not $readmeContent.Contains($requiredPublicToolLink)) {
+            $failures.Add("README is missing public-tool link: $requiredPublicToolLink")
+        }
+    }
+
     if (Test-Path -LiteralPath (Join-Path $repositoryRoot '.git')) {
         $remotes = @(git remote)
         if ($remotes -contains 'origin') {

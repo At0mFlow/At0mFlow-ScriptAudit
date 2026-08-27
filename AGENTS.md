@@ -28,6 +28,8 @@ Audit collector, its tests, synthetic examples, documentation and brand assets.
   `https://github.com/At0mFlow/At0mFlow-ScriptAudit.git` or its equivalent
   GitHub SSH URL.
 - Use synthetic examples and fixtures only.
+- Keep the README's `Other public At0mFlow tools` section current. It must link
+  every other public At0mFlow tool and must not link this repository to itself.
 - Before every commit and push, run `./scripts/Test-PublicBoundary.ps1` and
   `./tests/Run-Tests.ps1`.
 - Stop if the boundary check fails. Do not bypass or weaken it without reviewing
