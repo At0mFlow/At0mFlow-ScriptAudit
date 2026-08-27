@@ -73,5 +73,8 @@ a resident agent.
 - The one-hour event evidence comes only from Windows Event Viewer on each
   collected computer. No At0mFlow service is contacted.
 
-For a reusable, repository-agnostic scheduled commit tool, see the public
-At0mFlow RepoSync project when it becomes available.
+For a reusable, repository-agnostic scheduled commit tool, use
+[At0mFlow RepoSync](https://github.com/At0mFlow/At0mFlow-RepoSync). A clear
+separation of responsibilities is often easier to operate: Script Audit
+refreshes the approved `scripts/` and `manifests/` folders, then RepoSync
+previews, commits and optionally pushes only those paths.

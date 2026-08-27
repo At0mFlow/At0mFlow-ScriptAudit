@@ -233,6 +233,9 @@ At0mFlow product code.
   PSScriptAnalyzer findings easier to read and automate.
 - [At0mFlow Uptime Monitor](https://github.com/At0mFlow/At0mFlow-UptimeMonitor)
   checks HTTP and HTTPS endpoints from PowerShell.
+- [At0mFlow RepoSync](https://github.com/At0mFlow/At0mFlow-RepoSync) safely
+  commits and optionally pushes explicit paths from an existing Git working
+  tree, including a reviewed Script Audit collection.
 
 ## Documentation
 
