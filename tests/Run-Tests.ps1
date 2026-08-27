@@ -29,9 +29,31 @@ $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('At0mFlow-ScriptAudit-Tes
 
 try {
     $manifest = Test-ModuleManifest -Path $modulePath
-    Assert-That ($manifest.Version.ToString() -eq '1.0.0') 'The module manifest is valid.'
+    Assert-That ($manifest.Version.ToString() -eq '1.1.0') 'The module manifest is valid.'
 
     Import-Module $modulePath -Force
+    $moduleInstance = Get-Module At0mFlow.ScriptAudit
+
+    $successfulOutcome = & $moduleInstance {
+        Get-At0mFlowTaskEventOutcome -EventId 201 -ResultCode '0'
+    }
+    $failedOutcome = & $moduleInstance {
+        Get-At0mFlowTaskEventOutcome -EventId 201 -ResultCode '2147942401'
+    }
+    $schedulerStatusOutcome = & $moduleInstance {
+        Get-At0mFlowTaskEventOutcome -EventId 201 -ResultCode '0x00041301'
+    }
+    $negativeFailureOutcome = & $moduleInstance {
+        Get-At0mFlowTaskEventOutcome -EventId 201 -ResultCode '-1'
+    }
+    $launchFailureOutcome = & $moduleInstance {
+        Get-At0mFlowTaskEventOutcome -EventId 101 -ResultCode ''
+    }
+    Assert-That ($successfulOutcome -eq 'Succeeded') 'A zero Task Scheduler action result is successful evidence.'
+    Assert-That ($failedOutcome -eq 'Failed') 'A non-zero action result is failure evidence.'
+    Assert-That ($schedulerStatusOutcome -eq 'SchedulerStatus') 'A Task Scheduler status constant is not mislabelled as a failure.'
+    Assert-That ($negativeFailureOutcome -eq 'Failed') 'A negative action result is failure evidence.'
+    Assert-That ($launchFailureOutcome -eq 'Failed') 'A Task Scheduler launch failure is failure evidence.'
 
     $quotedReference = @(
         Get-At0mFlowTaskScriptReference `
@@ -117,6 +139,9 @@ try {
         Assert-That (-not $report.HasErrors) 'A complete synthetic collection has no errors.'
         Assert-That ($report.Scripts[0].DeclaredAuthor -eq 'Example Automation Team') 'A declared author header is recorded.'
         Assert-That ($report.Scripts[0].CopyStatus -eq 'Copied') 'The manifest records a verified copy.'
+        Assert-That ($report.Scripts[0].CollectionChange -eq 'Added') 'A first collection records an added copy.'
+        Assert-That ($report.Scripts[0].SourcePhysicalPath -eq $sourcePath) 'The physical source path is recorded.'
+        Assert-That ([string]::IsNullOrWhiteSpace($report.Scripts[0].RepositoryRelativePath)) 'A non-Git bundle does not invent a repository path.'
 
         $copiedPath = Join-Path $bundlePath ($report.Scripts[0].CentralRelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
         Assert-That (Test-Path -LiteralPath $copiedPath -PathType Leaf) 'The copied script exists in the central tree.'
@@ -128,11 +153,86 @@ try {
         $taskInventoryPath = Join-Path $bundlePath 'manifests/scheduled-tasks.csv'
         $summaryPath = Join-Path $bundlePath 'manifests/summary.json'
         $treePath = Join-Path $bundlePath 'manifests/TREE.txt'
+        $executionEvidencePath = Join-Path $bundlePath 'manifests/script-run-evidence.csv'
         Assert-That (Test-Path -LiteralPath $scriptInventoryPath) 'The script inventory CSV is written.'
         Assert-That (Test-Path -LiteralPath $taskInventoryPath) 'An empty scheduled-task CSV keeps its schema.'
         Assert-That (Test-Path -LiteralPath $summaryPath) 'The JSON summary is written.'
+        Assert-That (Test-Path -LiteralPath $executionEvidencePath) 'The one-hour execution evidence CSV is written.'
+        $executionEvidence = @(Import-Csv -LiteralPath $executionEvidencePath)
+        Assert-That ($executionEvidence.Count -eq 1) 'Every discovered script receives an execution-evidence row.'
+        Assert-That ($executionEvidence[0].EvidenceStatus -eq 'NoScheduledTaskReference') 'A script without a task is not given an invented run result.'
+        Assert-That ($executionEvidence[0].Outcome -eq 'Unknown') 'Missing execution evidence remains unknown.'
+        $summaryData = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+        Assert-That ($summaryData.ExecutionEvidenceLookbackHours -eq 1) 'Execution evidence is limited to the last hour.'
         Assert-That ((Get-Content -LiteralPath $treePath -Raw) -match 'Synthetic-NightlyReport\.ps1') 'The folder tree lists the copied script.'
         Assert-That (-not (Test-Path -LiteralPath (Join-Path $bundlePath '.git'))) 'The collector does not initialise Git.'
+
+        $syntheticTaskEvidence = [pscustomobject] @{
+            ComputerName             = $report.Scripts[0].ComputerName
+            TaskName                  = 'Synthetic evidence task'
+            TaskPath                  = '\Operations\'
+            ActionExecute             = 'powershell.exe'
+            IncludedScriptReferences  = $sourcePath
+        }
+        $syntheticFailureEvent = [pscustomobject] @{
+            ComputerName = $report.Scripts[0].ComputerName
+            EventTimeUtc  = '2026-08-27T02:30:00.0000000Z'
+            EventId       = 201
+            EventRecordId = 12345
+            TaskName      = '\Operations\Synthetic evidence task'
+            ActionName    = 'powershell.exe'
+            ResultCode    = '1'
+        }
+        $observedEvidence = @(& $moduleInstance {
+            param($ScriptRow, $TaskRow, $EventRow)
+            ConvertTo-At0mFlowExecutionEvidence `
+                -Scripts @($ScriptRow) `
+                -Tasks @($TaskRow) `
+                -TaskEvents @($EventRow) `
+                -EventLogStatus 'Available' `
+                -LookbackStartUtc '2026-08-27T02:00:00.0000000Z' `
+                -LookbackEndUtc '2026-08-27T03:00:00.0000000Z'
+        } $report.Scripts[0] $syntheticTaskEvidence $syntheticFailureEvent)
+        Assert-That ($observedEvidence.Count -eq 1) 'A matching Task Scheduler event maps to one script evidence row.'
+        Assert-That ($observedEvidence[0].Outcome -eq 'Failed') 'A matching non-zero action result maps to a failure.'
+        Assert-That ($observedEvidence[0].Attribution -eq 'ExactTaskAction') 'A single matching task action has exact attribution.'
+        Assert-That ($observedEvidence[0].EvidenceKey.Length -eq 64) 'Observed evidence has a stable deduplication key.'
+
+        $liveEvidenceBundlePath = Join-Path $temporaryRoot 'Live Evidence Bundle'
+        $liveEvidenceReport = Invoke-At0mFlowScriptAudit `
+            -ComputerName 'localhost' `
+            -SearchPath $sourceRoot `
+            -ExcludePath $excludedRoot `
+            -OutputPath $liveEvidenceBundlePath
+        $liveEvidenceSummary = Get-Content `
+            -LiteralPath (Join-Path $liveEvidenceBundlePath 'manifests/summary.json') `
+            -Raw | ConvertFrom-Json
+        $liveStatus = @($liveEvidenceSummary.TaskEventLogStatusByComputer.PSObject.Properties.Value)[0]
+        Assert-That ($liveStatus -in @('Available', 'Disabled', 'Unavailable', 'QueryFailed')) 'The local Task Scheduler event-log state is explicit.'
+        Assert-That ($liveEvidenceReport.ExecutionEvidence.Count -ge 1) 'Live task discovery still gives every collected script an evidence status.'
+
+        $unchangedReport = Invoke-At0mFlowScriptAudit `
+            -ComputerName 'localhost' `
+            -SearchPath $sourceRoot `
+            -ExcludePath $excludedRoot `
+            -SkipScheduledTasks `
+            -OutputPath $bundlePath `
+            -Force
+        Assert-That ($unchangedReport.Scripts[0].CollectionChange -eq 'Unchanged') 'An identical recurring collection is unchanged.'
+        Assert-That ($unchangedReport.Scripts[0].PreviousCollectedSHA256 -eq $sourceHash) 'The previous collected hash is retained.'
+        Assert-That ($unchangedReport.Scripts[0].CollectedSHA256 -eq $sourceHash) 'The verified collected hash is retained.'
+
+        Add-Content -LiteralPath $sourcePath -Value "Write-Output 'Synthetic revision'"
+        $modifiedReport = Invoke-At0mFlowScriptAudit `
+            -ComputerName 'localhost' `
+            -SearchPath $sourceRoot `
+            -ExcludePath $excludedRoot `
+            -SkipScheduledTasks `
+            -OutputPath $bundlePath `
+            -Force
+        Assert-That ($modifiedReport.Scripts[0].CollectionChange -eq 'Modified') 'A changed source records a modified copy.'
+        Assert-That ($modifiedReport.Scripts[0].PreviousCollectedSHA256 -eq $sourceHash) 'A modification records the previous copy hash.'
+        Assert-That ($modifiedReport.Scripts[0].CollectedSHA256 -eq $modifiedReport.Scripts[0].SHA256) 'A modified copy is hash verified.'
 
         $inventoryBundlePath = Join-Path $temporaryRoot 'Inventory Bundle'
         $inventoryReport = Invoke-At0mFlowScriptAudit `
@@ -174,7 +274,60 @@ try {
         $jsonReport = $jsonText | ConvertFrom-Json
         Assert-That ($LASTEXITCODE -eq 0) 'JSON output exits successfully.'
         Assert-That ($jsonReport.ScriptCount -eq 1) 'JSON output contains the bundle summary.'
+        Assert-That ($jsonReport.GitSyncStatus -eq 'NotRequested') 'JSON output reports that Git sync was not requested.'
         Assert-That ($jsonText -notmatch 'PowerShell clarity\.') 'JSON output does not include console branding.'
+
+        if ($null -ne (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            $gitRemotePath = Join-Path $temporaryRoot 'Synthetic Remote.git'
+            $gitWorkingPath = Join-Path $temporaryRoot 'Synthetic Working'
+            New-Item -ItemType Directory -Path $gitWorkingPath -Force | Out-Null
+            & git init --bare $gitRemotePath | Out-Null
+            & git -C $gitWorkingPath init | Out-Null
+            & git -C $gitWorkingPath config user.name 'Synthetic Test'
+            & git -C $gitWorkingPath config user.email 'test@example.com'
+            'Synthetic repository fixture.' | Set-Content -LiteralPath (Join-Path $gitWorkingPath 'NOTICE.txt') -Encoding UTF8
+            & git -C $gitWorkingPath add NOTICE.txt
+            & git -C $gitWorkingPath commit -m 'Initial synthetic commit' | Out-Null
+            & git -C $gitWorkingPath remote add origin $gitRemotePath
+            & git -C $gitWorkingPath push -u origin HEAD | Out-Null
+
+            $gitReport = Invoke-At0mFlowScriptAudit `
+                -ComputerName 'localhost' `
+                -SearchPath $sourceRoot `
+                -ExcludePath $excludedRoot `
+                -SkipScheduledTasks `
+                -OutputPath $gitWorkingPath `
+                -Force `
+                -GitSync
+            Assert-That ($gitReport.GitSyncStatus -eq 'Pushed') 'An approved existing Git working tree is committed and pushed.'
+            Assert-That (-not [string]::IsNullOrWhiteSpace($gitReport.GitCommit)) 'The pushed commit identifier is returned.'
+            $gitInventory = @(Import-Csv -LiteralPath (Join-Path $gitWorkingPath 'manifests/script-inventory.csv'))
+            Assert-That ($gitInventory[0].SourcePhysicalPath -eq $sourcePath) 'The Git inventory records the physical source path.'
+            Assert-That (Test-Path -LiteralPath $gitInventory[0].CollectedCopyPath -PathType Leaf) 'The Git inventory records the existing collected copy.'
+            Assert-That ($gitInventory[0].RepositoryRelativePath -like 'scripts/*/Synthetic-NightlyReport.ps1') 'The stable Git-relative copy path is recorded.'
+
+            'This staged file must remain outside the collector commit.' |
+                Set-Content -LiteralPath (Join-Path $gitWorkingPath 'UNRELATED.txt') -Encoding UTF8
+            & git -C $gitWorkingPath add UNRELATED.txt
+            Add-Content -LiteralPath $sourcePath -Value "Write-Output 'Second synthetic revision'"
+            $secondGitReport = Invoke-At0mFlowScriptAudit `
+                -ComputerName 'localhost' `
+                -SearchPath $sourceRoot `
+                -ExcludePath $excludedRoot `
+                -SkipScheduledTasks `
+                -OutputPath $gitWorkingPath `
+                -Force `
+                -GitSync
+            Assert-That ($secondGitReport.GitSyncStatus -eq 'Pushed') 'A later source change is committed and pushed.'
+            Assert-That ($secondGitReport.Scripts[0].CollectionChange -eq 'Modified') 'The recurring Git copy identifies a modified script.'
+            $stagedNames = @(& git -C $gitWorkingPath diff --cached --name-only)
+            Assert-That ($stagedNames -contains 'UNRELATED.txt') 'Unrelated staged work remains staged and outside the collector commit.'
+            $remoteCommitCount = [int] (& git --git-dir=$gitRemotePath rev-list --count --all)
+            Assert-That ($remoteCommitCount -eq 3) 'The private remote receives only the initial and two collector commits.'
+        }
+        else {
+            Write-Host 'SKIP: Git sync integration tests require Git.' -ForegroundColor Yellow
+        }
 
         $failureBundlePath = Join-Path $temporaryRoot 'Failure Bundle'
         & $entryPoint `

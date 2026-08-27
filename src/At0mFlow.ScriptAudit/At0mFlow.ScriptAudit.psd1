@@ -1,6 +1,6 @@
 @{
     RootModule        = 'At0mFlow.ScriptAudit.psm1'
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.1.0'
     GUID              = 'd921fc68-4eb8-4b52-a036-7589f420df49'
     Author            = 'At0mFlow'
     CompanyName       = 'At0mFlow'

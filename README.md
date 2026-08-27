@@ -16,13 +16,15 @@ one server or many, preserving their folder tree, and recording the scheduled
 tasks that run them.
 
 It creates one local audit bundle containing copied scripts, CSV inventories,
-task actions, triggers, conditions, hashes and collection errors. It is designed
-for server estate discovery, SCCM deployment and the first stage of a controlled
-PowerShell audit.
+task actions, triggers, conditions, hashes, collection errors and one hour of
+local Task Scheduler outcome evidence. It is designed for server estate
+discovery, SCCM deployment and the first stage of a controlled PowerShell audit.
 
 The collector is public. The bundle it creates is not. Generated bundles can
-contain source code and infrastructure metadata, so the tool never initialises
-Git, pushes a repository, uploads to At0mFlow or sends telemetry.
+contain source code and infrastructure metadata. By default the tool performs
+no Git operation. An explicit `-GitSync` option can update a preconfigured
+private Git working tree, but it never initialises Git, creates a remote, stores
+credentials, uploads to At0mFlow or sends telemetry.
 
 ## Quick start
 
@@ -75,6 +77,8 @@ Computers: 2
 Scripts found: 47
 Scripts copied: 47
 PowerShell task actions: 18
+Execution evidence: 12
+Execution failures: 1
 Collection errors: 1
 Bundle: D:\Audit\At0mFlow-ScriptAudit-20260827
 ```
@@ -127,6 +131,7 @@ At0mFlow-ScriptAudit-20260827/
   manifests/
     script-inventory.csv
     scheduled-tasks.csv
+    script-run-evidence.csv
     collection-errors.csv
     summary.json
     TREE.txt
@@ -141,6 +146,12 @@ The inventory distinguishes a header's `DeclaredAuthor` from the Windows
 records include the principal, run level, logon type, action, arguments,
 working directory, script references, trigger summary, conditions, run times
 and last result.
+
+`script-run-evidence.csv` looks back exactly one hour in the local Windows Task
+Scheduler Operational log. A script is marked successful or failed only when a
+matching event provides that evidence. Missing, disabled or inaccessible logs
+remain explicitly unknown. The collector never runs a discovered script to
+test it.
 
 See the complete [output schema](docs/output-schema.md) and the checked-in
 [synthetic examples](examples/).
@@ -173,9 +184,30 @@ This writes manifests and task context without copying source files.
 
 ## Private Git hand-off
 
-The collector does not run Git. If version control is approved after review,
-use a private repository and scan the collected scripts for credentials first.
-See [safe Git hand-off](docs/safe-git-handoff.md).
+The default collector does not run Git. If version control is approved after
+review, use a private repository and scan the collected scripts for credentials
+first. See [safe Git hand-off](docs/safe-git-handoff.md).
+
+## Recurring private repository refresh
+
+For an approved, existing private Git checkout, the collector can refresh its
+stable folder tree and push only collector-owned paths:
+
+```powershell
+./src/Invoke-At0mFlowScriptAudit.ps1 `
+    -SearchPath C:\Scripts, D:\Automation `
+    -OutputPath D:\PrivateGit\PowerShell-Estate `
+    -Force `
+    -GitSync `
+    -Quiet `
+    -FailOnCollectionError
+```
+
+Configure the Git remote, upstream branch, author and non-interactive
+authentication before scheduling the command. The tool does not create or
+store those settings. It commits only `scripts/`, `manifests/` and the bundle
+`README.txt`, so unrelated repository content and staged work stay outside the
+collector commit. See [recurring private repository refresh](docs/recurring-private-repository.md).
 
 ## Take the estate further with At0mFlow
 
@@ -210,6 +242,7 @@ At0mFlow product code.
 - [SCCM deployment](docs/sccm.md)
 - [Output schema](docs/output-schema.md)
 - [Safe Git hand-off](docs/safe-git-handoff.md)
+- [Recurring private repository refresh](docs/recurring-private-repository.md)
 
 ## Contributing
 

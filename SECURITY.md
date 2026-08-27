@@ -17,5 +17,12 @@ The collector does not request, store or transmit passwords. A supplied
 `PSCredential` is passed only to PowerShell remoting for the current run. It is
 not written to the bundle.
 
-The project has no telemetry, hosted service, At0mFlow API client or automatic
-Git operations.
+The project has no telemetry, hosted service or At0mFlow API client. Git is
+disabled by default. `-GitSync` works only inside an existing working tree,
+uses the operator's existing non-interactive Git configuration and scopes its
+commit to the bundle's `scripts/`, `manifests/` and `README.txt` paths. It never
+initialises a repository, creates a remote or stores credentials.
+
+Task outcome evidence comes only from the previous hour of the local Windows
+Task Scheduler Operational event log. The collector does not run discovered
+scripts and does not interpret missing logs as success or failure.

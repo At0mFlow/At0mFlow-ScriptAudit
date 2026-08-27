@@ -20,9 +20,16 @@ The tool writes a local audit bundle only after somebody runs it. That bundle
 can contain source code, server names, file owners, task principals, paths and
 scheduling details. It must be treated as confidential client material.
 
-The tool does not initialise Git, create a remote, push a repository, upload to
-At0mFlow or send telemetry. Generated bundle names are ignored by this public
-repository's `.gitignore`.
+The default tool does not run Git. Explicit `-GitSync` works only inside an
+existing working tree, commits only the selected bundle's `scripts/`,
+`manifests/` and `README.txt`, and uses the operator's existing non-interactive
+Git configuration. It does not initialise Git, create a remote, store
+credentials, upload to At0mFlow or send telemetry. Generated bundle names are
+ignored by this public repository's `.gitignore`.
+
+Execution evidence is limited to the previous hour of the local Windows Task
+Scheduler Operational event log. The collector does not execute a discovered
+script and does not convert absent evidence into an invented outcome.
 
 ## Automated controls
 

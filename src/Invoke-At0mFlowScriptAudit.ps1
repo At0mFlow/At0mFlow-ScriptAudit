@@ -10,6 +10,9 @@ Collects custom PowerShell scripts and Windows scheduled-task context into one a
 
 .EXAMPLE
 ./src/Invoke-At0mFlowScriptAudit.ps1 -ScanFixedDrives -Quiet -FailOnCollectionError
+
+.EXAMPLE
+./src/Invoke-At0mFlowScriptAudit.ps1 -SearchPath C:\Scripts -OutputPath D:\Git\PowerShell-Estate -Force -GitSync
 #>
 [CmdletBinding()]
 param(
@@ -41,6 +44,11 @@ param(
 
     [switch] $Force,
 
+    [switch] $GitSync,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $GitCommitMessage = 'At0mFlow Script Audit refresh',
+
     [ValidateSet('Console', 'Object', 'Json')]
     [string] $Format = 'Console',
 
@@ -65,6 +73,8 @@ try {
         MaxFileSizeMB              = $MaxFileSizeMB
         InventoryOnly              = $InventoryOnly
         Force                      = $Force
+        GitSync                    = $GitSync
+        GitCommitMessage           = $GitCommitMessage
     }
     if (@($SearchPath).Count -gt 0) {
         $auditParameters.SearchPath = $SearchPath
@@ -90,7 +100,9 @@ try {
                 $report |
                     Select-Object StartedAtUtc, CompletedAtUtc, OutputPath,
                         ComputerCount, ScriptCount, CopiedCount,
-                        ScheduledTaskCount, ErrorCount, HasErrors, InventoryOnly |
+                        ScheduledTaskCount, ErrorCount, HasErrors, InventoryOnly,
+                        ExecutionEvidenceCount, ExecutionFailureCount,
+                        GitSyncStatus, GitCommit |
                     ConvertTo-Json -Depth 4
             }
         }

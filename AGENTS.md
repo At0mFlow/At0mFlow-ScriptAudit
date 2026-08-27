@@ -15,9 +15,14 @@ Audit collector, its tests, synthetic examples, documentation and brand assets.
   backend, authentication, billing or customer-data logic.
 - Never add collected client scripts, task exports, server inventories or audit
   bundles to this repository.
-- Never initialise, commit, sync or push a client's collected scripts. The tool
-  may only write the requested local audit bundle.
+- Never initialise a client's repository, create a remote, store Git
+  credentials or stage paths outside the requested bundle. Explicit Git sync
+  may operate only in an existing working tree and must commit only the
+  bundle's `scripts/`, `manifests/` and `README.txt` paths.
 - Never add telemetry or upload audit results to At0mFlow or another service.
+- Never execute discovered scripts to infer success or failure. Execution
+  evidence must come from the previous hour of the local Windows Task Scheduler
+  Operational event log and missing evidence must remain unknown.
 - Never stage files from outside this repository.
 - Keep `origin` pointed only to
   `https://github.com/At0mFlow/At0mFlow-ScriptAudit.git` or its equivalent

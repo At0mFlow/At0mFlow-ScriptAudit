@@ -48,6 +48,33 @@ Task folders under `\Microsoft\` are excluded by default:
 
 Use that option only when built-in task context is genuinely needed.
 
+## One-hour execution evidence
+
+When scheduled-task discovery is enabled, the collector reads only the previous
+hour from `Microsoft-Windows-TaskScheduler/Operational`. It records matching
+action completion and launch failure evidence in
+`manifests/script-run-evidence.csv`.
+
+The account running the collector must be allowed to read that local Windows
+event log. When several computers are collected over WinRM, the same check runs
+inside each remote session against that computer's local event log. Nothing is
+sent to At0mFlow or another service.
+
+Task Scheduler history must be enabled by an administrator before collection.
+The collector reports disabled or inaccessible logging but does not modify the
+event log or local permissions.
+
+The outcome rules are deliberately conservative:
+
+- result code `0` from event 201 is `Succeeded`;
+- a non-zero action result, task launch failure, logon failure or action start
+  failure is `Failed`;
+- Task Scheduler status constants are `SchedulerStatus`, not failures;
+- no matching event is `Unknown`, never a presumed success;
+- ambiguous multi-action task attribution is labelled in the CSV.
+
+The collector never executes a discovered script to determine its status.
+
 ## Default locations
 
 `-IncludeDefaultLocations` removes the standard Windows and Program Files path

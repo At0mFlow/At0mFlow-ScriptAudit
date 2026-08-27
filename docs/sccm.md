@@ -20,6 +20,9 @@ gaps are present.
   or another approved execution identity.
 - Writing locally and letting SCCM collect the bundle is often simpler than
   writing directly to a network share.
+- Reading one-hour execution evidence requires local access to the Task
+  Scheduler Operational event log. Grant only the event-log permission needed
+  by the approved SCCM execution identity.
 
 ## Detection and collection
 
@@ -28,6 +31,10 @@ Use `manifests/summary.json` as the completion artefact. Check its timestamp,
 
 Collect the whole output folder, not only the copied scripts. The CSVs provide
 the task and provenance context needed during estate review.
+
+`script-run-evidence.csv` contains only the previous hour of local Task
+Scheduler evidence. Disabled or inaccessible logging is recorded as unavailable
+evidence rather than success or failure.
 
 ## Reruns
 

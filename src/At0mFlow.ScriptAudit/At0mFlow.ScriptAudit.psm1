@@ -158,6 +158,396 @@ function Test-At0mFlowLocalComputer {
     return $localNames -contains $ComputerName
 }
 
+function Invoke-At0mFlowGitCommand {
+    param(
+        [Parameter(Mandatory)]
+        [string] $WorkingDirectory,
+
+        [Parameter(Mandatory)]
+        [string[]] $ArgumentList,
+
+        [int[]] $AcceptedExitCode = @(0)
+    )
+
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $gitCommand) {
+        throw 'Git is required for -GitSync but was not found on PATH.'
+    }
+
+    $previousPromptSetting = $env:GIT_TERMINAL_PROMPT
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $ErrorActionPreference = 'Continue'
+        $commandOutput = @(
+            & $gitCommand.Source -C $WorkingDirectory -c core.longpaths=true @ArgumentList 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        [Environment]::SetEnvironmentVariable(
+            'GIT_TERMINAL_PROMPT',
+            $previousPromptSetting,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+
+    if ($AcceptedExitCode -notcontains $exitCode) {
+        $readableOutput = ($commandOutput | ForEach-Object { [string] $_ }) -join [Environment]::NewLine
+        if ([string]::IsNullOrWhiteSpace($readableOutput)) {
+            $readableOutput = 'Git returned no diagnostic output.'
+        }
+        throw "Git command failed with exit code $exitCode`: git $($ArgumentList -join ' ')`n$readableOutput"
+    }
+
+    [pscustomobject] @{
+        ExitCode = $exitCode
+        Output   = (($commandOutput | ForEach-Object { [string] $_ }) -join [Environment]::NewLine).Trim()
+    }
+}
+
+function Get-At0mFlowGitContext {
+    param(
+        [Parameter(Mandatory)]
+        [string] $OutputPath,
+
+        [switch] $Required
+    )
+
+    if ($null -eq (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        if ($Required.IsPresent) {
+            throw 'Git is required for -GitSync but was not found on PATH.'
+        }
+        return $null
+    }
+
+    try {
+        $rootResult = Invoke-At0mFlowGitCommand `
+            -WorkingDirectory $OutputPath `
+            -ArgumentList @('rev-parse', '--show-toplevel')
+    }
+    catch {
+        if ($Required.IsPresent) {
+            throw "-GitSync requires OutputPath to be inside an existing Git working tree. $($_.Exception.Message)"
+        }
+        return $null
+    }
+
+    $gitRoot = [IO.Path]::GetFullPath($rootResult.Output).TrimEnd('\', '/')
+    $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath).TrimEnd('\', '/')
+    $rootPrefix = $gitRoot + [IO.Path]::DirectorySeparatorChar
+    if (($resolvedOutputPath -ne $gitRoot) -and
+        -not $resolvedOutputPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The resolved output path is outside the Git working tree.'
+    }
+
+    $pathToCheck = Get-Item -LiteralPath $resolvedOutputPath -Force -ErrorAction Stop
+    while ($null -ne $pathToCheck) {
+        if ($pathToCheck.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "-GitSync does not allow a reparse point in the output path: $($pathToCheck.FullName)"
+        }
+        if ($pathToCheck.FullName.TrimEnd('\', '/') -eq $gitRoot) {
+            break
+        }
+        $pathToCheck = $pathToCheck.Parent
+    }
+
+    $outputRelativePath = if ($resolvedOutputPath -eq $gitRoot) {
+        '.'
+    }
+    else {
+        $resolvedOutputPath.Substring($rootPrefix.Length).Replace('\', '/')
+    }
+    $pathPrefix = if ($outputRelativePath -eq '.') { '' } else { $outputRelativePath + '/' }
+
+    [pscustomobject] @{
+        RootPath           = $gitRoot
+        OutputRelativePath = $outputRelativePath
+        Pathspecs          = @(
+            $pathPrefix + 'scripts'
+            $pathPrefix + 'manifests'
+            $pathPrefix + 'README.txt'
+        )
+    }
+}
+
+function Invoke-At0mFlowGitSync {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Context,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string] $CommitMessage
+    )
+
+    $pathspecs = @($Context.Pathspecs)
+    Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $Context.RootPath `
+        -ArgumentList (@('add', '-A', '--') + $pathspecs) | Out-Null
+
+    $diffResult = Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $Context.RootPath `
+        -ArgumentList (@('diff', '--cached', '--quiet', '--') + $pathspecs) `
+        -AcceptedExitCode @(0, 1)
+    if ($diffResult.ExitCode -eq 0) {
+        return [pscustomobject] @{
+            Status = 'NoChanges'
+            Commit = ''
+        }
+    }
+
+    $datedMessage = '{0} ({1})' -f $CommitMessage.Trim(), ([DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+    Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $Context.RootPath `
+        -ArgumentList (@('commit', '--only', '-m', $datedMessage, '--') + $pathspecs) | Out-Null
+    $commitResult = Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $Context.RootPath `
+        -ArgumentList @('rev-parse', 'HEAD')
+    Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $Context.RootPath `
+        -ArgumentList @('push') | Out-Null
+
+    [pscustomobject] @{
+        Status = 'Pushed'
+        Commit = $commitResult.Output
+    }
+}
+
+function Get-At0mFlowTaskEventOutcome {
+    param(
+        [Parameter(Mandatory)]
+        [int] $EventId,
+
+        [AllowEmptyString()]
+        [string] $ResultCode
+    )
+
+    if ($EventId -in @(101, 104, 311)) {
+        return 'Failed'
+    }
+    if ($EventId -ne 201) {
+        return 'Unknown'
+    }
+
+    $normalisedResult = $ResultCode.Trim()
+    if ([string]::IsNullOrWhiteSpace($normalisedResult)) {
+        return 'Unknown'
+    }
+
+    $numericResult = [uint64] 0
+    $signedResult = [int64] 0
+    $parsed = if ($normalisedResult.StartsWith('0x', [StringComparison]::OrdinalIgnoreCase)) {
+        [uint64]::TryParse(
+            $normalisedResult.Substring(2),
+            [Globalization.NumberStyles]::HexNumber,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [ref] $numericResult
+        )
+    }
+    else {
+        if ([uint64]::TryParse($normalisedResult, [ref] $numericResult)) {
+            $true
+        }
+        elseif ([int64]::TryParse($normalisedResult, [ref] $signedResult)) {
+            if ($signedResult -lt 0) {
+                return 'Failed'
+            }
+            $numericResult = [uint64] $signedResult
+            $true
+        }
+        else {
+            $false
+        }
+    }
+    if (-not $parsed) {
+        return 'Unknown'
+    }
+
+    if ($numericResult -eq 0) { return 'Succeeded' }
+    if (($numericResult -ge 0x00041300) -and ($numericResult -le 0x00041308)) {
+        return 'SchedulerStatus'
+    }
+    return 'Failed'
+}
+
+function Get-At0mFlowEvidenceKey {
+    param(
+        [Parameter(Mandatory)]
+        [string[]] $Value
+    )
+
+    $text = $Value -join '|'
+    $bytes = [Text.Encoding]::UTF8.GetBytes($text)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function ConvertTo-At0mFlowExecutionEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]] $Scripts,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]] $Tasks,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]] $TaskEvents,
+
+        [Parameter(Mandatory)]
+        [string] $EventLogStatus,
+
+        [Parameter(Mandatory)]
+        [string] $LookbackStartUtc,
+
+        [Parameter(Mandatory)]
+        [string] $LookbackEndUtc
+    )
+
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $evidenceLookbackStartUtc = $LookbackStartUtc
+    $evidenceLookbackEndUtc = $LookbackEndUtc
+
+    function Add-EvidenceRow {
+        param(
+            [psobject] $Script,
+            [string] $EvidenceStatus,
+            [string] $Outcome,
+            [string] $Attribution,
+            [psobject] $Task,
+            [psobject] $TaskEvent
+        )
+
+        $eventTime = if ($null -ne $TaskEvent) { [string] $TaskEvent.EventTimeUtc } else { '' }
+        $eventId = if ($null -ne $TaskEvent) { [string] $TaskEvent.EventId } else { '' }
+        $eventRecordId = if ($null -ne $TaskEvent) { [string] $TaskEvent.EventRecordId } else { '' }
+        $resultCode = if ($null -ne $TaskEvent) { [string] $TaskEvent.ResultCode } else { '' }
+        $action = if ($null -ne $TaskEvent) { [string] $TaskEvent.ActionName } elseif ($null -ne $Task) { [string] $Task.ActionExecute } else { '' }
+        $taskName = if ($null -ne $Task) { [string] $Task.TaskName } elseif ($null -ne $TaskEvent) { [string] $TaskEvent.TaskName } else { '' }
+        $taskPath = if ($null -ne $Task) { [string] $Task.TaskPath } else { '' }
+        $isFailure = if ($Outcome -eq 'Failed') { 'True' } elseif ($Outcome -eq 'Succeeded') { 'False' } else { '' }
+        $evidenceKey = if ($EvidenceStatus -eq 'Observed') {
+            Get-At0mFlowEvidenceKey -Value @(
+                [string] $Script.ComputerName,
+                [string] $Script.CentralRelativePath,
+                $eventRecordId,
+                $eventId,
+                $taskPath,
+                $taskName,
+                $resultCode
+            )
+        }
+        else { '' }
+
+        $rows.Add([pscustomobject] @{
+            ComputerName          = $Script.ComputerName
+            SourcePhysicalPath    = $Script.SourcePhysicalPath
+            CollectedCopyPath     = $Script.CollectedCopyPath
+            RepositoryRelativePath = $Script.RepositoryRelativePath
+            CentralRelativePath   = $Script.CentralRelativePath
+            EvidenceStatus        = $EvidenceStatus
+            Outcome               = $Outcome
+            IsFailure             = $isFailure
+            Attribution           = $Attribution
+            EventTimeUtc          = $eventTime
+            EventId               = $eventId
+            EventRecordId         = $eventRecordId
+            TaskName              = $taskName
+            TaskPath              = $taskPath
+            Action                = $action
+            ResultCode            = $resultCode
+            EvidenceKey           = $evidenceKey
+            EvidenceSource        = 'Microsoft-Windows-TaskScheduler/Operational'
+            LookbackStartUtc      = $evidenceLookbackStartUtc
+            LookbackEndUtc        = $evidenceLookbackEndUtc
+        })
+    }
+
+    foreach ($script in $Scripts) {
+        $relatedTasks = @(
+            foreach ($task in $Tasks) {
+                $references = @(
+                    ([string] $task.IncludedScriptReferences) -split ';\s*' |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+                if (@($references | Where-Object {
+                    $_.Equals([string] $script.SourcePhysicalPath, [StringComparison]::OrdinalIgnoreCase)
+                }).Count -gt 0) {
+                    $task
+                }
+            }
+        )
+
+        if ($relatedTasks.Count -eq 0) {
+            Add-EvidenceRow -Script $script -EvidenceStatus 'NoScheduledTaskReference' `
+                -Outcome 'Unknown' -Attribution 'None' -Task $null -TaskEvent $null
+            continue
+        }
+        if ($EventLogStatus -ne 'Available') {
+            Add-EvidenceRow -Script $script -EvidenceStatus 'EventLogUnavailable' `
+                -Outcome 'Unknown' -Attribution 'None' -Task $relatedTasks[0] -TaskEvent $null
+            continue
+        }
+
+        $observedKeys = @{}
+        $observationCount = 0
+        foreach ($task in $relatedTasks) {
+            $fullTaskName = '{0}{1}' -f $task.TaskPath, $task.TaskName
+            $matchingEvents = @($TaskEvents | Where-Object {
+                ([string] $_.TaskName).Equals($fullTaskName, [StringComparison]::OrdinalIgnoreCase)
+            })
+            foreach ($taskEventRecord in $matchingEvents) {
+                $dedupeKey = '{0}|{1}' -f $taskEventRecord.EventRecordId, $script.CentralRelativePath
+                if ($observedKeys.ContainsKey($dedupeKey)) {
+                    continue
+                }
+                $observedKeys[$dedupeKey] = $true
+
+                $attribution = 'TaskLevel'
+                if ([int] $taskEventRecord.EventId -eq 201) {
+                    $candidateActions = @($relatedTasks | Where-Object {
+                        ('{0}{1}' -f $_.TaskPath, $_.TaskName).Equals($fullTaskName, [StringComparison]::OrdinalIgnoreCase) -and
+                        -not [string]::IsNullOrWhiteSpace([string] $taskEventRecord.ActionName) -and
+                        ([string] $_.ActionExecute).Trim().Trim('"').Equals(
+                            ([string] $taskEventRecord.ActionName).Trim().Trim('"'),
+                            [StringComparison]::OrdinalIgnoreCase
+                        )
+                    })
+                    $attribution = if ($candidateActions.Count -eq 1) {
+                        'ExactTaskAction'
+                    }
+                    else {
+                        'TaskActionAmbiguous'
+                    }
+                }
+
+                $outcome = Get-At0mFlowTaskEventOutcome `
+                    -EventId ([int] $taskEventRecord.EventId) `
+                    -ResultCode ([string] $taskEventRecord.ResultCode)
+                Add-EvidenceRow -Script $script -EvidenceStatus 'Observed' `
+                    -Outcome $outcome -Attribution $attribution -Task $task -TaskEvent $taskEventRecord
+                $observationCount++
+            }
+        }
+        if ($observationCount -eq 0) {
+            Add-EvidenceRow -Script $script -EvidenceStatus 'NoEventInLookback' `
+                -Outcome 'Unknown' -Attribution 'None' -Task $relatedTasks[0] -TaskEvent $null
+        }
+    }
+
+    return $rows.ToArray()
+}
+
 function Export-At0mFlowCsv {
     param(
         [Parameter(Mandatory)]
@@ -294,11 +684,19 @@ function Invoke-At0mFlowScriptAudit {
 
         [switch] $InventoryOnly,
 
-        [switch] $Force
+        [switch] $Force,
+
+        [switch] $GitSync,
+
+        [ValidateNotNullOrEmpty()]
+        [string] $GitCommitMessage = 'At0mFlow Script Audit refresh'
     )
 
     if ($env:OS -ne 'Windows_NT') {
         throw 'At0mFlow Script Audit must run on Windows.'
+    }
+    if ($GitSync.IsPresent -and $InventoryOnly.IsPresent) {
+        throw '-GitSync cannot be combined with -InventoryOnly because there are no copied scripts to synchronise.'
     }
 
     $startedAtUtc = [DateTimeOffset]::UtcNow
@@ -317,11 +715,15 @@ function Invoke-At0mFlowScriptAudit {
     $manifestsPath = Join-Path $resolvedOutputPath 'manifests'
     New-Item -ItemType Directory -Path $scriptsPath -Force | Out-Null
     New-Item -ItemType Directory -Path $manifestsPath -Force | Out-Null
+    $gitContext = Get-At0mFlowGitContext -OutputPath $resolvedOutputPath -Required:$GitSync.IsPresent
 
     $scriptRows = New-Object 'System.Collections.Generic.List[object]'
     $taskRows = New-Object 'System.Collections.Generic.List[object]'
+    $taskEventRows = New-Object 'System.Collections.Generic.List[object]'
     $errorRows = New-Object 'System.Collections.Generic.List[object]'
     $searchRootsByComputer = [ordered] @{}
+    $taskEventLogStatusByComputer = [ordered] @{}
+    $eventLookbackByComputer = [ordered] @{}
     $parserDefinition = ${function:Get-At0mFlowTaskScriptReference}.ToString()
     $maximumBytes = [int64] $MaxFileSizeMB * 1MB
 
@@ -349,7 +751,11 @@ function Invoke-At0mFlowScriptAudit {
         }
         $errors = New-Object 'System.Collections.Generic.List[object]'
         $tasks = New-Object 'System.Collections.Generic.List[object]'
+        $taskEvents = New-Object 'System.Collections.Generic.List[object]'
         $scripts = New-Object 'System.Collections.Generic.List[object]'
+        $eventLookbackEndUtc = [DateTimeOffset]::UtcNow
+        $eventLookbackStartUtc = $eventLookbackEndUtc.AddHours(-1)
+        $taskEventLogStatus = if ($DoNotReadScheduledTasks) { 'Skipped' } else { 'Unavailable' }
         $candidates = @{}
         $state = @{ SuppressedErrors = 0 }
         $maximumRecordedErrors = 200
@@ -626,6 +1032,78 @@ function Invoke-At0mFlowScriptAudit {
                     Add-DiscoveryError -Stage 'ScheduledTasks' -Target $computer -Message $_.Exception.Message
                 }
             }
+
+            try {
+                $taskSchedulerLog = Get-WinEvent `
+                    -ListLog 'Microsoft-Windows-TaskScheduler/Operational' `
+                    -ErrorAction Stop
+                if (-not $taskSchedulerLog.IsEnabled) {
+                    $taskEventLogStatus = 'Disabled'
+                }
+                else {
+                    $taskEventLogStatus = 'Available'
+                    $eventErrors = @()
+                    $recentEvents = @(
+                        Get-WinEvent -FilterHashtable @{
+                            LogName   = 'Microsoft-Windows-TaskScheduler/Operational'
+                            Id        = @(101, 104, 201, 311)
+                            StartTime = $eventLookbackStartUtc.LocalDateTime
+                            EndTime   = $eventLookbackEndUtc.LocalDateTime
+                        } -ErrorAction SilentlyContinue -ErrorVariable +eventErrors
+                    )
+                    if ($eventErrors.Count -gt 0) {
+                        $nonEmptyErrors = @($eventErrors | Where-Object {
+                            ([string] $_).IndexOf('No events were found', [StringComparison]::OrdinalIgnoreCase) -lt 0
+                        })
+                        if ($nonEmptyErrors.Count -gt 0) {
+                            $taskEventLogStatus = 'QueryFailed'
+                        }
+                    }
+
+                    foreach ($eventRecord in $recentEvents) {
+                        try {
+                            [xml] $eventXml = $eventRecord.ToXml()
+                            $eventData = @{}
+                            foreach ($dataNode in @($eventXml.Event.EventData.Data)) {
+                                $dataName = ''
+                                if ($null -ne $dataNode.Attributes['Name']) {
+                                    $dataName = [string] $dataNode.Attributes['Name'].Value
+                                }
+                                if (-not [string]::IsNullOrWhiteSpace($dataName)) {
+                                    $eventData[$dataName] = [string] $dataNode.InnerText
+                                }
+                            }
+                            $eventTaskName = [string] $eventData['TaskName']
+                            if ([string]::IsNullOrWhiteSpace($eventTaskName)) {
+                                continue
+                            }
+                            $resultCode = [string] $eventData['ResultCode']
+                            if ([string]::IsNullOrWhiteSpace($resultCode)) {
+                                $resultCode = [string] $eventData['ErrorValue']
+                            }
+                            $actionName = [string] $eventData['ActionName']
+                            if ([string]::IsNullOrWhiteSpace($actionName)) {
+                                $actionName = [string] $eventData['Action']
+                            }
+                            $taskEvents.Add([pscustomobject] @{
+                                ComputerName  = $computer
+                                EventTimeUtc   = $eventRecord.TimeCreated.ToUniversalTime().ToString('o')
+                                EventId        = $eventRecord.Id
+                                EventRecordId  = $eventRecord.RecordId
+                                TaskName       = $eventTaskName
+                                ActionName     = $actionName
+                                ResultCode     = $resultCode
+                            })
+                        }
+                        catch {
+                            Add-DiscoveryError -Stage 'TaskEventParse' -Target ([string] $eventRecord.RecordId) -Message $_.Exception.Message
+                        }
+                    }
+                }
+            }
+            catch {
+                $taskEventLogStatus = 'Unavailable'
+            }
         }
 
         $roots = New-Object 'System.Collections.Generic.List[string]'
@@ -781,6 +1259,10 @@ function Invoke-At0mFlowScriptAudit {
             SearchRoots           = $roots.ToArray()
             Scripts               = $scripts.ToArray()
             Tasks                 = $tasks.ToArray()
+            TaskEvents            = $taskEvents.ToArray()
+            TaskEventLogStatus    = $taskEventLogStatus
+            EventLookbackStartUtc = $eventLookbackStartUtc.ToString('o')
+            EventLookbackEndUtc   = $eventLookbackEndUtc.ToString('o')
             Errors                = $errors.ToArray()
             SuppressedErrorCount  = $state.SuppressedErrors
         }
@@ -825,8 +1307,16 @@ function Invoke-At0mFlowScriptAudit {
 
             $actualComputerName = [string] $discovery.ComputerName
             $searchRootsByComputer[$actualComputerName] = @($discovery.SearchRoots)
+            $taskEventLogStatusByComputer[$actualComputerName] = [string] $discovery.TaskEventLogStatus
+            $eventLookbackByComputer[$actualComputerName] = [ordered] @{
+                StartUtc = [string] $discovery.EventLookbackStartUtc
+                EndUtc   = [string] $discovery.EventLookbackEndUtc
+            }
             foreach ($task in @($discovery.Tasks)) {
                 $taskRows.Add($task)
+            }
+            foreach ($taskEvent in @($discovery.TaskEvents)) {
+                $taskEventRows.Add($taskEvent)
             }
             foreach ($collectionError in @($discovery.Errors)) {
                 $errorRows.Add($collectionError)
@@ -846,24 +1336,52 @@ function Invoke-At0mFlowScriptAudit {
                     -OriginalPath $sourceScript.OriginalPath
                 $destinationPath = Join-Path $resolvedOutputPath ($centralRelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
                 $copyStatus = [string] $sourceScript.SourceStatus
+                $previousCollectedHash = ''
+                $collectedHash = ''
+                $collectionChange = 'Unavailable'
+                $repositoryRelativePath = ''
+                if ($null -ne $gitContext) {
+                    $repositoryRelativePath = if ($gitContext.OutputRelativePath -eq '.') {
+                        $centralRelativePath
+                    }
+                    else {
+                        '{0}/{1}' -f $gitContext.OutputRelativePath, $centralRelativePath
+                    }
+                }
 
                 if ($sourceScript.SourceStatus -eq 'Ready') {
                     if ($InventoryOnly.IsPresent) {
                         $copyStatus = 'InventoryOnly'
+                        $collectionChange = 'NotCopied'
                     }
                     else {
                         try {
                             $destinationDirectory = Split-Path -Parent $destinationPath
                             New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
-                            if ($isLocal) {
-                                Copy-Item -LiteralPath $sourceScript.OriginalPath -Destination $destinationPath -Force -ErrorAction Stop
+                            if (Test-Path -LiteralPath $destinationPath -PathType Leaf) {
+                                $previousCollectedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256 -ErrorAction Stop).Hash
+                                $collectionChange = if ($previousCollectedHash -eq $sourceScript.SHA256) {
+                                    'Unchanged'
+                                }
+                                else {
+                                    'Modified'
+                                }
                             }
                             else {
-                                Copy-Item -FromSession $session -LiteralPath $sourceScript.OriginalPath -Destination $destinationPath -Force -ErrorAction Stop
+                                $collectionChange = 'Added'
                             }
-                            $destinationHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256 -ErrorAction Stop).Hash
-                            if ($destinationHash -ne $sourceScript.SHA256) {
+                            if ($collectionChange -ne 'Unchanged') {
+                                if ($isLocal) {
+                                    Copy-Item -LiteralPath $sourceScript.OriginalPath -Destination $destinationPath -Force -ErrorAction Stop
+                                }
+                                else {
+                                    Copy-Item -FromSession $session -LiteralPath $sourceScript.OriginalPath -Destination $destinationPath -Force -ErrorAction Stop
+                                }
+                            }
+                            $collectedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256 -ErrorAction Stop).Hash
+                            if ($collectedHash -ne $sourceScript.SHA256) {
                                 $copyStatus = 'HashMismatch'
+                                $collectionChange = 'HashMismatch'
                                 $errorRows.Add([pscustomobject] @{
                                     ComputerName = $actualComputerName
                                     Stage        = 'CopyVerification'
@@ -877,6 +1395,7 @@ function Invoke-At0mFlowScriptAudit {
                         }
                         catch {
                             $copyStatus = 'CopyFailed'
+                            $collectionChange = 'CopyFailed'
                             $errorRows.Add([pscustomobject] @{
                                 ComputerName = $actualComputerName
                                 Stage        = 'Copy'
@@ -891,6 +1410,9 @@ function Invoke-At0mFlowScriptAudit {
                     ComputerName        = $actualComputerName
                     OriginalPath        = $sourceScript.OriginalPath
                     CentralRelativePath = $centralRelativePath
+                    SourcePhysicalPath  = $sourceScript.OriginalPath
+                    CollectedCopyPath   = $destinationPath
+                    RepositoryRelativePath = $repositoryRelativePath
                     DiscoverySources    = $sourceScript.DiscoverySources
                     ReferencedByTasks   = $sourceScript.ReferencedByTasks
                     DeclaredAuthor      = $sourceScript.DeclaredAuthor
@@ -899,6 +1421,9 @@ function Invoke-At0mFlowScriptAudit {
                     CreatedUtc          = $sourceScript.CreatedUtc
                     LastWriteUtc        = $sourceScript.LastWriteUtc
                     SHA256              = $sourceScript.SHA256
+                    PreviousCollectedSHA256 = $previousCollectedHash
+                    CollectedSHA256     = $collectedHash
+                    CollectionChange    = $collectionChange
                     CopyStatus          = $copyStatus
                 })
             }
@@ -920,11 +1445,30 @@ function Invoke-At0mFlowScriptAudit {
 
     $scriptArray = $scriptRows.ToArray()
     $taskArray = $taskRows.ToArray()
+    $taskEventArray = $taskEventRows.ToArray()
     $errorArray = $errorRows.ToArray()
+    $executionEvidenceRows = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($evidenceComputer in @($scriptArray | Select-Object -ExpandProperty ComputerName -Unique)) {
+        $lookback = $eventLookbackByComputer[$evidenceComputer]
+        $evidence = ConvertTo-At0mFlowExecutionEvidence `
+            -Scripts @($scriptArray | Where-Object ComputerName -eq $evidenceComputer) `
+            -Tasks @($taskArray | Where-Object ComputerName -eq $evidenceComputer) `
+            -TaskEvents @($taskEventArray | Where-Object ComputerName -eq $evidenceComputer) `
+            -EventLogStatus ([string] $taskEventLogStatusByComputer[$evidenceComputer]) `
+            -LookbackStartUtc ([string] $lookback.StartUtc) `
+            -LookbackEndUtc ([string] $lookback.EndUtc)
+        foreach ($evidenceRow in @($evidence)) {
+            $executionEvidenceRows.Add($evidenceRow)
+        }
+    }
+    $executionEvidenceArray = $executionEvidenceRows.ToArray()
     $scriptProperties = @(
         'ComputerName', 'OriginalPath', 'CentralRelativePath',
+        'SourcePhysicalPath', 'CollectedCopyPath', 'RepositoryRelativePath',
         'DiscoverySources', 'ReferencedByTasks', 'DeclaredAuthor', 'FileOwner',
-        'LengthBytes', 'CreatedUtc', 'LastWriteUtc', 'SHA256', 'CopyStatus'
+        'LengthBytes', 'CreatedUtc', 'LastWriteUtc', 'SHA256',
+        'PreviousCollectedSHA256', 'CollectedSHA256', 'CollectionChange',
+        'CopyStatus'
     )
     $taskProperties = @(
         'ComputerName', 'TaskName', 'TaskPath', 'State', 'Author', 'Description',
@@ -934,26 +1478,48 @@ function Invoke-At0mFlowScriptAudit {
         'Conditions', 'LastRunUtc', 'NextRunUtc', 'LastTaskResult'
     )
     $errorProperties = @('ComputerName', 'Stage', 'Target', 'Message')
+    $executionEvidenceProperties = @(
+        'ComputerName', 'SourcePhysicalPath', 'CollectedCopyPath',
+        'RepositoryRelativePath', 'CentralRelativePath', 'EvidenceStatus',
+        'Outcome', 'IsFailure', 'Attribution', 'EventTimeUtc', 'EventId',
+        'EventRecordId', 'TaskName', 'TaskPath', 'Action', 'ResultCode',
+        'EvidenceKey', 'EvidenceSource', 'LookbackStartUtc', 'LookbackEndUtc'
+    )
 
     $scriptInventoryPath = Join-Path $manifestsPath 'script-inventory.csv'
     $scheduledTasksPath = Join-Path $manifestsPath 'scheduled-tasks.csv'
     $errorsPath = Join-Path $manifestsPath 'collection-errors.csv'
+    $executionEvidencePath = Join-Path $manifestsPath 'script-run-evidence.csv'
     Export-At0mFlowCsv -InputObject $scriptArray -Property $scriptProperties -Path $scriptInventoryPath
     Export-At0mFlowCsv -InputObject $taskArray -Property $taskProperties -Path $scheduledTasksPath
     Export-At0mFlowCsv -InputObject $errorArray -Property $errorProperties -Path $errorsPath
+    Export-At0mFlowCsv `
+        -InputObject $executionEvidenceArray `
+        -Property $executionEvidenceProperties `
+        -Path $executionEvidencePath
 
     $completedAtUtc = [DateTimeOffset]::UtcNow
     $summary = [ordered] @{
         Tool                  = 'At0mFlow Script Audit'
-        Version               = '1.0.0'
+        Version               = '1.1.0'
         StartedAtUtc          = $startedAtUtc
         CompletedAtUtc        = $completedAtUtc
         OutputPath            = $resolvedOutputPath
+        GitWorkingTreeRoot    = $(if ($null -ne $gitContext) { $gitContext.RootPath } else { '' })
+        GitOutputRelativePath = $(if ($null -ne $gitContext) { $gitContext.OutputRelativePath } else { '' })
+        GitSyncRequested      = $GitSync.IsPresent
         InventoryOnly         = $InventoryOnly.IsPresent
         ComputerCount         = @($ComputerName | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
         ScriptCount           = $scriptArray.Count
         CopiedCount           = @($scriptArray | Where-Object CopyStatus -eq 'Copied').Count
+        AddedCount            = @($scriptArray | Where-Object CollectionChange -eq 'Added').Count
+        ModifiedCount         = @($scriptArray | Where-Object CollectionChange -eq 'Modified').Count
+        UnchangedCount        = @($scriptArray | Where-Object CollectionChange -eq 'Unchanged').Count
         ScheduledTaskCount    = $taskArray.Count
+        ExecutionEvidenceLookbackHours = 1
+        ExecutionEvidenceCount = @($executionEvidenceArray | Where-Object EvidenceStatus -eq 'Observed').Count
+        ExecutionFailureCount = @($executionEvidenceArray | Where-Object IsFailure -eq 'True').Count
+        TaskEventLogStatusByComputer = $taskEventLogStatusByComputer
         ErrorCount            = $errorArray.Count
         HasErrors             = $errorArray.Count -gt 0
         SearchRootsByComputer = $searchRootsByComputer
@@ -973,27 +1539,45 @@ function Invoke-At0mFlowScriptAudit {
         'manifests/script-inventory.csv records file metadata and hashes.'
         'manifests/scheduled-tasks.csv records PowerShell task actions, triggers and conditions.'
         'manifests/collection-errors.csv records access and collection gaps.'
+        'manifests/script-run-evidence.csv records one hour of local Task Scheduler outcome evidence.'
         'manifests/summary.json records run totals.'
         'manifests/TREE.txt shows the collected folder tree.'
         ''
-        'The collector did not initialise Git, upload this bundle or send telemetry.'
+        'The collector did not initialise Git, create a remote, upload this bundle or send telemetry.'
         'For deeper estate analysis, documentation and migration planning, visit https://at0mflow.com.'
     ) | Set-Content -LiteralPath (Join-Path $resolvedOutputPath 'README.txt') -Encoding UTF8
+
+    $gitSyncStatus = 'NotRequested'
+    $gitCommit = ''
+    if ($GitSync.IsPresent) {
+        $gitResult = Invoke-At0mFlowGitSync `
+            -Context $gitContext `
+            -CommitMessage $GitCommitMessage
+        $gitSyncStatus = $gitResult.Status
+        $gitCommit = $gitResult.Commit
+    }
 
     [pscustomobject] @{
         PSTypeName         = 'At0mFlow.ScriptAudit.Report'
         StartedAtUtc       = $startedAtUtc
         CompletedAtUtc     = $completedAtUtc
         OutputPath         = $resolvedOutputPath
+        GitWorkingTreeRoot = $(if ($null -ne $gitContext) { $gitContext.RootPath } else { '' })
+        GitOutputRelativePath = $(if ($null -ne $gitContext) { $gitContext.OutputRelativePath } else { '' })
+        GitSyncStatus      = $gitSyncStatus
+        GitCommit          = $gitCommit
         ComputerCount      = $summary.ComputerCount
         ScriptCount        = $summary.ScriptCount
         CopiedCount        = $summary.CopiedCount
         ScheduledTaskCount = $summary.ScheduledTaskCount
+        ExecutionEvidenceCount = $summary.ExecutionEvidenceCount
+        ExecutionFailureCount = $summary.ExecutionFailureCount
         ErrorCount         = $summary.ErrorCount
         HasErrors          = $summary.HasErrors
         InventoryOnly      = $summary.InventoryOnly
         Scripts            = $scriptArray
         ScheduledTasks     = $taskArray
+        ExecutionEvidence  = $executionEvidenceArray
         Errors             = $errorArray
     }
 }
@@ -1026,7 +1610,14 @@ function Write-At0mFlowScriptAuditReport {
         Write-Host ('Computers: {0}' -f $Report.ComputerCount)
         Write-Host ('Scripts found: {0}' -f $Report.ScriptCount)
         Write-Host ('Scripts copied: {0}' -f $Report.CopiedCount)
+        if ($Report.PSObject.Properties.Name -contains 'GitSyncStatus') {
+            Write-Host ('Git sync: {0}' -f $Report.GitSyncStatus)
+        }
         Write-Host ('PowerShell task actions: {0}' -f $Report.ScheduledTaskCount)
+        if ($Report.PSObject.Properties.Name -contains 'ExecutionEvidenceCount') {
+            Write-Host ('Execution evidence: {0}' -f $Report.ExecutionEvidenceCount)
+            Write-Host ('Execution failures: {0}' -f $Report.ExecutionFailureCount)
+        }
         $errorColour = if ($Report.HasErrors) { 'Yellow' } else { 'Green' }
         Write-Host ('Collection errors: {0}' -f $Report.ErrorCount) -ForegroundColor $errorColour
         Write-Host ('Bundle: {0}' -f $Report.OutputPath) -ForegroundColor DarkCyan
