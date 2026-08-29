@@ -32,6 +32,13 @@ Use `manifests/summary.json` as the completion artefact. Check its timestamp,
 Collect the whole output folder, not only the copied scripts. The CSVs provide
 the task and provenance context needed during estate review.
 
+If SCCM collects bundles from several servers into one private repository,
+preserve one stable folder per server, such as `collectors/SERVER-01` and
+`collectors/SERVER-02`. Do not merge their `manifests/` folders or direct
+several collectors to the same output path. See
+[recurring private repository refresh](recurring-private-repository.md) for a
+safe shared-repository layout.
+
 `script-run-evidence.csv` contains only the previous hour of local Task
 Scheduler evidence. Disabled or inaccessible logging is recorded as unavailable
 evidence rather than success or failure.

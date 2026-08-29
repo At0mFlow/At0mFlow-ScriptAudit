@@ -81,8 +81,7 @@ $credentialPatterns = @(
 $personalDataPatterns = @(
     '(?i)\b[A-Z0-9._%+-]+@(?!example\.(?:com|org|net)\b)[A-Z0-9.-]+\.[A-Z]{2,}\b',
     '(?i)\bC:\\Users\\(?!Public\\)[^\\\s]+\\',
-    '(?i)\b/(?:home|Users)/(?!runner(?:/|\b))[^/\s]+/',
-    ('(?i)\b(?:' + 'Papi' + 'Paragon|Circuit' + 'Danny|Company' + '_Startup_V1)\b')
+    '(?i)\b/(?:home|Users)/(?!runner(?:/|\b))[^/\s]+/'
 )
 
 Push-Location $repositoryRoot

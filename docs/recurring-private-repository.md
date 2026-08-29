@@ -49,6 +49,35 @@ event-log settings or local group membership.
 Review the resulting commit and confirm that the expected private remote
 received it before scheduling the command.
 
+## Keep local collectors separate
+
+When Script Audit runs locally on several servers and their bundles are later
+placed in one private repository, give every collector its own stable output
+folder. Do not point two collectors at the same `-OutputPath`, because each
+bundle owns its own manifests and `README.txt`.
+
+```text
+PowerShell-Estate/
+  collectors/
+    SERVER-01/
+      README.txt
+      scripts/
+      manifests/
+    SERVER-02/
+      README.txt
+      scripts/
+      manifests/
+```
+
+Keep each bundle unchanged beneath its collector folder. After the local jobs
+finish, use an approved transfer process to place the folders in one existing
+private Git working tree. A single RepoSync job at the repository root can then
+preview and sync `collectors/`. Avoid concurrent Git jobs sharing one working
+tree or several machines pushing the same branch at the same time.
+
+This layout is ordinary Git and remains useful without At0mFlow. The operator
+can optionally connect the private repository to At0mFlow later.
+
 ## Schedule hourly
 
 Create a Windows Scheduled Task that runs the same command every hour. Use an

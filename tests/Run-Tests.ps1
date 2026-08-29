@@ -29,7 +29,7 @@ $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('At0mFlow-ScriptAudit-Tes
 
 try {
     $manifest = Test-ModuleManifest -Path $modulePath
-    Assert-That ($manifest.Version.ToString() -eq '1.1.0') 'The module manifest is valid.'
+    Assert-That ($manifest.Version.ToString() -eq '1.1.1') 'The module manifest is valid.'
 
     Import-Module $modulePath -Force
     $moduleInstance = Get-Module At0mFlow.ScriptAudit

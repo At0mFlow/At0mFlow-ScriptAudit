@@ -236,30 +236,33 @@ function Get-At0mFlowGitContext {
     }
 
     $gitRoot = [IO.Path]::GetFullPath($rootResult.Output).TrimEnd('\', '/')
-    $resolvedOutputPath = [IO.Path]::GetFullPath($OutputPath).TrimEnd('\', '/')
-    $rootPrefix = $gitRoot + [IO.Path]::DirectorySeparatorChar
-    if (($resolvedOutputPath -ne $gitRoot) -and
-        -not $resolvedOutputPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'The resolved output path is outside the Git working tree.'
+    $prefixResult = Invoke-At0mFlowGitCommand `
+        -WorkingDirectory $OutputPath `
+        -ArgumentList @('rev-parse', '--show-prefix')
+    $outputRelativePath = $prefixResult.Output.TrimEnd('/')
+    if ([string]::IsNullOrWhiteSpace($outputRelativePath)) {
+        $outputRelativePath = '.'
     }
-
-    $pathToCheck = Get-Item -LiteralPath $resolvedOutputPath -Force -ErrorAction Stop
-    while ($null -ne $pathToCheck) {
+    $pathLevelsToCheck = if ($outputRelativePath -eq '.') {
+        1
+    }
+    else {
+        @($outputRelativePath -split '/').Count + 1
+    }
+    $pathToCheck = Get-Item `
+        -LiteralPath ([IO.Path]::GetFullPath($OutputPath)) `
+        -Force `
+        -ErrorAction Stop
+    for ($pathLevel = 0; $pathLevel -lt $pathLevelsToCheck; $pathLevel++) {
         if ($pathToCheck.Attributes -band [IO.FileAttributes]::ReparsePoint) {
             throw "-GitSync does not allow a reparse point in the output path: $($pathToCheck.FullName)"
         }
-        if ($pathToCheck.FullName.TrimEnd('\', '/') -eq $gitRoot) {
+        if ($null -eq $pathToCheck.Parent) {
             break
         }
         $pathToCheck = $pathToCheck.Parent
     }
 
-    $outputRelativePath = if ($resolvedOutputPath -eq $gitRoot) {
-        '.'
-    }
-    else {
-        $resolvedOutputPath.Substring($rootPrefix.Length).Replace('\', '/')
-    }
     $pathPrefix = if ($outputRelativePath -eq '.') { '' } else { $outputRelativePath + '/' }
 
     [pscustomobject] @{
@@ -1501,7 +1504,7 @@ function Invoke-At0mFlowScriptAudit {
     $completedAtUtc = [DateTimeOffset]::UtcNow
     $summary = [ordered] @{
         Tool                  = 'At0mFlow Script Audit'
-        Version               = '1.1.0'
+        Version               = '1.1.1'
         StartedAtUtc          = $startedAtUtc
         CompletedAtUtc        = $completedAtUtc
         OutputPath            = $resolvedOutputPath
