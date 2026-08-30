@@ -29,7 +29,7 @@ $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('At0mFlow-ScriptAudit-Tes
 
 try {
     $manifest = Test-ModuleManifest -Path $modulePath
-    Assert-That ($manifest.Version.ToString() -eq '1.1.1') 'The module manifest is valid.'
+    Assert-That ($manifest.Version.ToString() -eq '1.1.2') 'The module manifest is valid.'
 
     Import-Module $modulePath -Force
     $moduleInstance = Get-Module At0mFlow.ScriptAudit
@@ -259,6 +259,7 @@ try {
         Assert-That ($LASTEXITCODE -eq 0) 'The entry script exits successfully.'
         $block = [string] [char] 0x2588
         $logoFragment = '       ' + (($block * 5) -join '') + [char] 0x2557
+        Assert-That $consoleText.Contains(('@' * 26)) 'Interactive output renders the Orbit mascot.'
         Assert-That $consoleText.Contains($logoFragment) 'Interactive output renders the At0mFlow block wordmark.'
         Assert-That ($consoleText -match 'At0mFlow Script Audit') 'Interactive output identifies the collector.'
         Assert-That ($consoleText -match 'Treat the bundle as confidential') 'Interactive output includes the privacy warning.'

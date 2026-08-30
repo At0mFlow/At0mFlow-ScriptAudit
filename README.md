@@ -53,8 +53,11 @@ excluded by default.
 
 ## What the console shows
 
+Interactive runs open with the full [Orbit console mascot](src/At0mFlow.ScriptAudit/Orbit.Console.txt)
+above the At0mFlow wordmark. The sample below starts at the wordmark.
+
 ```text
-========================================================================
+==================================================================================================
 
        █████╗ ████████╗ ██████╗ ███╗   ███╗███████╗██╗      ██████╗ ██╗    ██╗
       ██╔══██╗╚══██╔══╝██╔═████╗████╗ ████║██╔════╝██║     ██╔═══██╗██║    ██║
@@ -70,7 +73,7 @@ excluded by default.
 
                          https://at0mflow.com
 
-========================================================================
+==================================================================================================
 
 At0mFlow Script Audit
 Computers: 2
