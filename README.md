@@ -296,6 +296,7 @@ At0mFlow product code.
 - [Output schema](docs/output-schema.md)
 - [Safe Git hand-off](docs/safe-git-handoff.md)
 - [Recurring private repository refresh](docs/recurring-private-repository.md)
+- [Hourly PowerShell estate tracking with Git](https://at0mflow.com/docs/hourly-powershell-estate-tracking)
 
 ## Contributing
 
